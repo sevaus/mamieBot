@@ -1,90 +1,107 @@
-import requests
-import utils
 import configs
+import utils
 
-# TODO: try except the r.status_code != 200, handle rate limiting
+import requests
+import time
 
-def get_summoner(puuid = None, summoner_name = None, account_id = None, summoner_id = None):
+
+def get_(url, fetch_name = None, retries = 3):
+    if retries > 0:
+        r = requests.get(url)
+        if r.status_code == 200:
+            res = r.json()
+            return res
+        elif r.status_code == 429: # Rate limit exceeded
+            time.sleep(3)             
+            return get_(url, fetch_name, retries = retries - 1)
+
+
+def get_summoner(puuid = None, riot_id = None, account_id = None, summoner_id = None):
     """Returns a dictionary {id, accountId, puuid, name, profileIconId, revisionDate, summonerLevel}."""
     if puuid is not None:
-        r = requests.get(url = configs.SUMMONER_BY_PUUID.format(puuid = puuid))
-        if r.status_code == 200:
-            summoner = r.json()
-            return summoner
-        else:
-            print(f"Error {r.status_code} while fetching get_summoner for {puuid}")
-
-    elif summoner_name is not None:
-        r  = requests.get(url = configs.SUMMONER_BY_NAME.format(name = summoner_name))
-        if r.status_code == 200:
-            summoner = r.json()
-            return summoner
-        else:
-            print(f"Error {r.status_code} while fetching get_summoner")
-
+        r = get_(url = configs.SUMMONER_BY_PUUID.format(puuid = puuid), fetch_name = f"get_summoner for puuid (summoner): {puuid}")
+        rr = get_(url = configs.ACCOUNT_BY_PUUID.format(puuid = puuid), fetch_name = f"get_summoner for puuid (account): {puuid}") # Add game_name and tagline
+        r.update(rr)
+        return r
+    elif riot_id is not None:
+        r  = get_(url = configs.ACCOUNT_BY_RIOT_ID.format(game_name = riot_id["game_name"], tagline = riot_id["tagline"]), fetch_name = f"get_summoner for riot_id: {riot_id}")
+        return r
     elif account_id is not None:
-        r  = requests.get(url = configs.SUMMONER_BY_ACCOUNT_ID.format(account_id = account_id))
-        if r.status_code == 200:
-            summoner = r.json()
-            return summoner
-        else:
-            print(f"Error {r.status_code} while fetching get_summoner")            
+        r  = get_(url = configs.SUMMONER_BY_ACCOUNT_ID.format(account_id = account_id), fetch_name = f"get_summoner for account_id: {account_id}")
+        return r
     elif summoner_id is not None:
-        r  = requests.get(url = configs.SUMMONER_BY_SUMMONER_ID.format(summoner_id = summoner_id))
-        if r.status_code == 200:
-            summoner = r.json()
-            return summoner
-        else:
-            print(f"Error {r.status_code} while fetching get_summoner")            
+        r  = get_(url = configs.SUMMONER_BY_SUMMONER_ID.format(summoner_id = summoner_id), fetch_name = f"get_summoner for summoner_id: {summoner_id}")
+        return r
     else:
         return None
 
 
-def get_summoner_ranks(summoner_id):
+def get_summoner_entries(summoner_id, tft = False):
     """Returns a dictionary of dictionaries {queue_type: dictionary about this queue_type}."""
-    r = requests.get(url = configs.RANK_BY_SUMMONER_ID.format(summoner_id = summoner_id))
-    if r.status_code == 200:
-        queue_list = r.json() # This is a list (each entry corresponds to a queue)
+    base_url = configs.ENTRY_BY_SUMMONER_ID if not tft else configs.TFT_ENTRY_BY_SUMMONER_ID
+    r = get_(url = (base_url).format(summoner_id = summoner_id), fetch_name = "summoner_ranks")
+    if r is not None:
         ranks = {}
-        for queue in queue_list:
+        # r is a list (each entry corresponds to a queue)        
+        for queue in r: 
             queue_type = queue["queueType"]
             ranks[queue_type] = queue
         return ranks
-    else:
-        print(f"Error {r.status_code} while fetching summoner_ranks") 
-        return None
         
 
-def get_played_games(puuid, queue_id, start):
+def get_played_games(puuid, queue_id, start, end, tft = False):
     """Return a list of match_ids corresponding to the (finished) games played by puuid between start and now (the beginning of the list is the most recent game)."""
     epoch_start = utils.convert_datetime_to_epoch(start)
-    r = requests.get(url = configs.MATCHES_BY_PUUID.format(puuid = puuid, epoch_start = epoch_start, queue_id = queue_id))
-    if r.status_code == 200:
-        games = r.json()
-        return games
-    else:
-        print(f"Error {r.status_code} while fetching get_played_games") 
-        return None
+    epoch_end = utils.convert_datetime_to_epoch(end)
+    base_url = configs.MATCHES_BY_PUUID if not tft else configs.TFT_MATCHES_BY_PUUID
+    r = get_(url = (base_url).format(puuid = puuid, epoch_start = epoch_start, epoch_end = epoch_end, queue_id = queue_id), fetch_name = "get_played_games")
+    return r
 
 
-def get_ended_game_info(match_id):
+def get_ended_game_info(match_id, tft = False):
     """Returns information about the ended game - the fields are detailled at https://developer.riotgames.com/apis#match-v5/GET_getMatch."""
-    r = requests.get(url = configs.MATCHES_BY_MATCH_ID.format(match_id = match_id))
-    if r.status_code == 200:
-        game = r.json()
-        return game
-    else: 
-        print(f"Error {r.status_code} while fetching get_ended_game_info") 
-        return None
+    base_url = configs.MATCHES_BY_MATCH_ID if not tft else configs.TFT_MATCHES_BY_MATCH_ID
+    r = get_(url = (base_url).format(match_id = match_id), fetch_name = "get_ended_game_info")
+    return r
 
 
-def get_current_game(summoner_id):
+def get_current_game(puuid, tft = False):
     """Returns information about the current game."""
-    r = requests.get(url = configs.CURRENT_MATCH_BY_SUMMONER_ID.format(summoner_id = summoner_id))
-    if r.status_code == 200:
-        game = r.json()  
-        return game
-    # Avoid printing 404 errors (which usually indicate that the summoner is not in game)
-    elif r.status_code != 404:
-        print(f"Error {r.status_code} while fetching get_current_game") 
-        return None
+    base_url = configs.CURRENT_MATCH_BY_PUUID if not tft else configs.TFT_CURRENT_MATCH_BY_PUUID
+    r = get_(url = (base_url).format(puuid = puuid), fetch_name = "get_current_game")
+    return r
+
+
+def get_apex_league(queue_id, apex_tier):
+    """Returns information about the current game."""
+    url = {"MASTER": configs.MASTER_LEAGUE_BY_QUEUE, 
+          "GRANDMASTER": configs.GRANDMASTER_LEAGUE_BY_QUEUE,
+          "CHALLENGER": configs.CHALLENGER_LEAGUE_BY_QUEUE}[apex_tier.upper()]
+    r = get_(url = url.format(queue_type = configs.QUEUE_ID_TO_TYPE[str(queue_id)]), fetch_name = "get_apex_league")
+    return r    
+
+def get_cutoff(apex_tier, queue_id):
+    """Gets the cutoff and a summoner at this cutoff for the apex_tier of the given queue_id."""
+
+    # Load the 3 apex tiers (necessary regardless of the apex_tier queried)
+    master = get_apex_league(queue_id, "MASTER")["entries"]
+    grandmaster = get_apex_league(queue_id, "GRANDMASTER")["entries"]
+    challenger = get_apex_league(queue_id, "CHALLENGER")["entries"]
+    together = sorted(master + grandmaster + challenger, key = lambda participant: participant["leaguePoints"], reverse = True)
+
+    # Get the cutoff
+    if apex_tier.upper() in ["GM", "GRANDMASTER"]:
+        participant = together[min(1000, len(together))] # Grandmaster tier has maximum 1000 players
+        cutoff, summoner_id = max(participant["leaguePoints"], 200), participant["summonerId"] # Grandmaster tier needs 200+ LP
+    elif apex_tier.upper() in ["CHALL", "CHALLENGER"]:
+        participant = together[min(300, len(together))] # Challenger tier has maximum 300 players
+        cutoff, summoner_id = max(participant["leaguePoints"], 500), participant["summonerId"] # Challenger tier needs 500+ LP
+
+    return cutoff, summoner_id
+
+
+def get_champion_mastery(summoner_id, champion_id):
+    """Returns the mastery of this summoner for the given champion."""
+    r = get_(url = configs.CHAMPION_MASTERY_BY_SUMMONER_ID.format(summoner_id = summoner_id, champion_id = champion_id), fetch_name = "get_champion_mastery")
+    return r
+

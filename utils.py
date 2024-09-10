@@ -1,13 +1,21 @@
-import datetime
 import configs
-from PIL import Image
-from io import BytesIO
+import community_dragon as cdragon
+
+import datetime
+import pytz
+
+from functools import reduce
+
+
+####################
+# TIME
+####################
 
 
 def add_time(f):
     """Decorator to add the time to a function f outputting a string."""
     def aux(*args, **kwargs):
-        return "{dt}: {s}".format(dt = datetime.datetime.now().strftime(configs.DMYHMS_FORMAT), s = f(*args, **kwargs))
+        return "{dt}: {s}".format(dt = now().strftime(configs.DMYHMS_FORMAT), s = f(*args, **kwargs))
     return aux
 
 
@@ -16,9 +24,9 @@ def convert_datetime_to_epoch(dt):
     return int(dt.timestamp())
 
 
-def convert_epoch_to_datetime(epoch):
+def convert_epoch_to_datetime(epoch, timezone = configs.TIMEZONE):
     """Converts given epoch timestamp in seconds to datetime."""
-    return datetime.datetime.fromtimestamp(epoch)
+    return datetime.datetime.fromtimestamp(epoch).astimezone(pytz.timezone(timezone))
 
 
 def convert_seconds_to_hms(n):
@@ -27,137 +35,25 @@ def convert_seconds_to_hms(n):
     n -= 3600*h
     m = int(n/60)
     n -= 60*m
-    s = n if n > 9 else "0{}".format(n)
-    return "{h}:{m}:{s}".format(h = h, m = m, s = s) if h > 0 else "{m}:{s}".format(m = m, s = s)
+    s = n
+    return f"{h:d}:{m:02d}:{s:02}" if h > 0 else f"{m:02d}:{s:02d}"
 
 
-def format_progress(progress):
-    """Formats the progress string (eg "WLNNN") into Discord emojis."""
-    res = ""
-    for c in progress:
-        if c == "W":
-            res += configs.GREEN_CHECKMARK
-        elif c == "L":
-            res += configs.RED_CROSS
-        elif c == "N":
-            res += configs.WHITE_SQUARE
-        elif c == "D":
-            res += configs.BLACK_CIRCLE
-        else:
-            res += c
+def now(timezone = configs.TIMEZONE):
+    return datetime.datetime.now(pytz.timezone(timezone))
+
+
+def string_to_datetime(ts, timezone = configs.TIMEZONE):
+    """Converts a string to a datetime.datetime object."""
+    res = datetime.datetime.strptime(ts, configs.DMYHMS_FORMAT) if ts is not None else now(timezone = timezone)
+    res = res.astimezone(pytz.timezone(timezone))
     return res
 
 
-def compare(past_rank, new_rank):
-    """Compares the two ranks to get the LP lost/gained and to spot dodges."""
+####################
+# ENTRY/PROGRESS
+####################
 
-    # Get the rank info
-    past_tier = past_rank["tier"].capitalize()
-    past_division = past_rank["rank"].capitalize()
-    past_lp = past_rank["leaguePoints"] 
-    past_wins = past_rank["wins"]
-    past_losses = past_rank["losses"]
-
-    new_tier = new_rank["tier"].capitalize()
-    new_division = new_rank["rank"].capitalize()
-    new_lp = new_rank["leaguePoints"]
-    new_wins = new_rank["wins"]
-    new_losses = new_rank["losses"]    
-
-    was_in_promos = "miniSeries" in past_rank
-    if was_in_promos:
-        past_progress = past_rank["miniSeries"]["progress"]
-    is_in_promos = "miniSeries" in new_rank
-    if is_in_promos:
-        new_progress = past_rank["miniSeries"]["progress"]   
-
-    was_unranked = past_tier == "UNRANKED"
-    if was_unranked:
-        past_progress = past_rank["placements"]["progress"]
-    is_unranked = new_tier == "UNRANKED"
-    if is_unranked:
-        new_progress = past_rank["placements"]["progress"]   
-
-    is_inactive = new_rank["inactive"]
-
-    # The result is a dictionary with (at least) the keys "result" and "description"
-    res = {"result": None, "description": None}
-
-    # If the number of games stays constant, it is either dodge, decay (it could also be a remake but we handle that in alerts.py's got_out_of_game)
-    if (past_wins + past_losses) == (new_wins + new_losses):
-        if not ((past_tier == new_tier) and (past_division == new_division) and (past_lp == new_lp)):
-            if is_inactive:
-                res["result"] = "DECAY"
-                res["description"] = f"They decayed from {format_rank(past_rank)} to {format_rank(new_rank)}"
-            else:
-                res["result"] = "DODGE"
-                if was_in_promos:
-                    progress = past_progress[:-1] + "D"
-                    if is_in_promos:
-                        res["description"] = f"They dodged a game in their promotion ({format_progress(progress)})."
-                    else:
-                        res["description"] = f"They ended their promotion on a dodge ({format_progress(progress)})."
-                else:
-                    res["description"] = None # None because this is fed in alerts.dodge_info's extra_message
-
-    # Otherwise, we check for wins (including promotions) and losses (including demotions)
-    elif (past_wins + past_losses) != (new_wins + new_losses):
-        # TODO: find out if a remake counts as a win or loss or None and account for it
-        if new_wins == past_wins + 1:
-            if past_tier != new_tier:
-                res["result"] = "PROMOTION (TIER)"
-                progress = past_progress[:-1] + "W" # Don't take the last character as it is an "N" that we now know is a win
-                res["description"] = f" They got promoted to {new_tier} {new_lp} LP ({format_progress(progress)})!"
-            elif past_division != new_division:
-                res["result"] = "PROMOTION (DIVISION)"
-                res["description"] = f"They got promoted to {new_division} {new_lp} LP!"
-            elif was_in_promos:
-                res["result"] = "WIN (SERIES)"
-                res["description"] = f"They won a promotion game ({format_progress(new_progress)})!"
-            elif was_unranked:
-                if is_unranked:
-                    res["result"] = "WIN (PLACEMENTS)"
-                    res["description"] = f"They won a placement game ({format_progress(new_progress)})!"
-                else:
-                    res["result"] = "WIN (COMPLETE PLACEMENTS)"
-                    progress = past_progress[:-1] + "W"
-                    res["description"] = f"They won their last placement game and placed {format_rank(new_rank)} ({format_progress(progress)})!"
-            else:
-                res["result"] = "WIN"
-                res["description"] = f"They won {new_lp - past_lp} LP!"                               
-        elif new_losses == past_losses + 1:
-            if past_tier != new_tier:
-                res["result"] = "DEMOTION (TIER)"
-                res["description"] = f"They got demoted to {new_tier} {new_lp} LP."
-            elif past_division != new_division:
-                res["result"] = "DEMOTION (DIVISION)"
-                res["description"] = f"They got demoted to {new_division} {new_lp} LP."
-            elif was_in_promos:
-                if is_in_promos:
-                    res["result"] = "LOSE (SERIES)"
-                    res["description"] = f"They lost a promotion game ({format_progress(new_progress)})."
-                else:
-                    res["result"] = "LOSE (COMPLETE SERIES)"
-                    progress = past_progress[:-1] + "L"
-                    res["description"] = f"They lost their series ({format_progress(progress)})."
-            elif was_unranked:
-                if is_unranked:
-                    res["result"] = "LOSE (PLACEMENTS)"
-                    res["description"] = f"They lost a placement game ({format_progress(new_progress)})."
-                else:
-                    res["result"] = "LOSE (COMPLETE PLACEMENTS)"
-                    progress = past_progress[:-1] + "L"
-                    res["description"] = f"They lost their last placement game and placed {format_rank(new_rank)} ({format_progress(progress)})."  
-            else:
-                res["result"] = "LOSE"
-                res["description"] = f"They lost {past_lp - new_lp} LP."
-
-    else:
-        res["result"] = configs.DEBUG_MESSAGE
-        res["description"] = configs.DEBUG_MESSAGE
-        res["debug"] = {"past_rank": past_rank, "new_rank": new_rank}
-
-    return res
 
 def find_index(x, l):
     """Returns the index of the first ocurrence of x in l."""
@@ -167,78 +63,191 @@ def find_index(x, l):
     return -1
 
 
-def get_adjacent_rank(tier, rank, get_next = True):
-    """Gets the next/previous possible rank (ie Gold 3 -> Gold 2)."""
-    offset = 1 if get_next else -1
-    next_tier = configs.TIERS[find_index(tier, configs.TIERS) + offset]
-    next_rank = configs.RANKS[find_index(rank, configs.TIERS) + offset]
-    return format_rank({"tier": next_tier, "rank": next_rank, "leaguePoints": 1})
+def number_to_entry(number):
+    """Gives the corresponding entry to the number, starting from Iron IV 0 LP for 0."""
+    rank_multiplier = 101 # 101 LP per rank (0 to 100)
+    tier_multiplier = rank_multiplier*len(configs.RANKS)
+    tier = configs.TIERS[min(number//tier_multiplier, len(configs.TIERS) - len(configs.APEX_TIERS))] # Default the tier to the lowest apex tier as LP alone can't differentiate between apex tiers
+    rank = configs.RANKS[(number - (number//tier_multiplier)*tier_multiplier)//rank_multiplier] if tier not in configs.APEX_TIERS else "I"
+    lp = number%rank_multiplier if tier not in configs.APEX_TIERS else number - entry_to_number({"tier": "Master", "rank": "IV", "leaguePoints": 0})
+    return {"tier": tier, "rank": rank, "leaguePoints": lp}
 
 
-def get_ingame_rank_message(summoner_rank):
-    """Gets the message regarding rank displayes when a summoner gets in game (demotion, promotion, placement or normal)."""
-    tier = summoner_rank["tier"] # eg: Gold
-    rank = summoner_rank["rank"] # eg: II
-    lp = summoner_rank["leaguePoints"]
-
-    # If they are unranked, display their W/L
-    if "placements" in summoner_rank:
-        progress = summoner_rank["placements"]["progress"]
-        game_type = f"Placements ({format_progress(progress)})"
-    else: 
-        next_rank = get_adjacent_rank(tier, rank, get_next = True)
-        # If they are in series, display their W/L
-        if "miniSeries" in summoner_rank:
-            progress = summoner_rank["miniSeries"]["progress"]
-            game_type = f"Promotion game to {next_rank} ({format_progress(progress)})"
-        # If they are about to move a division within a tier (eg diamond 2 to diamond 1)
-        elif lp == 100:
-            game_type = f"Promotion game to {next_rank}"
-        # If they are about to demote (from within a division - demoting from tiers is not handled)
-        elif (lp == 0) and (rank != "IV") :
-            previous_rank = get_adjacent_rank(tier, rank, get_next = False)
-            if tier not in configs.APEX_TIERS:
-                game_type = f"Demotion game to {previous_rank}"
-            # The demotion in Master tier can only happen after the first three games (source https://support-leagueoflegends.riotgames.com/hc/en-us/articles/4405776545427)
-            elif tier == configs.APEX_TIERS[0]:
-                fresh_blood = summoner_rank["freshBlood"] # This means that they are still new to the tier and thus benefit from demotion shield
-                if fresh_blood:
-                    game_type = f"Demotion shielded game - When you first enter Master, you’re protected from losses and cannot be removed for your first three games)"
-                else:
-                    game_type = f"Demotion game to {previous_rank}"
-        else:
-            game_type = "Regular"
-
-    return game_type
+def entry_to_number(entry):
+    """Gives the corresponding number to the entry, starting from 0 for Iron IV 0 LP."""
+    if entry["tier"] == "UNRANKED":
+        return -1
+    tier = entry["tier"].upper() # eg: Gold
+    rank = entry["rank"] if tier not in configs.APEX_TIERS else "IV"
+    lp = entry["leaguePoints"]
+    rank_multiplier = 101 # 101 LP per rank (0 to 100)
+    tier_multiplier = rank_multiplier*len(configs.RANKS)
+    tier_index = find_index(tier, configs.TIERS) if tier not in configs.APEX_TIERS else (len(configs.TIERS) - len(configs.APEX_TIERS))
+    number = tier_index*tier_multiplier + find_index(rank, configs.RANKS)*rank_multiplier + lp
+    return number
 
 
-def format_rank(summoner_rank):
-    """Formats the rank (tier + rank + lp)."""
-    tier = summoner_rank["tier"] # eg: Gold
-    rank = summoner_rank["rank"] # eg: II
+def format_entry(entry):
+    """Gets the rating (tier + rank + lp)."""
+    tier = entry["tier"] # eg: Gold
+    rank = entry["rank"] # eg: II
     tier_division = tier.capitalize() + ((" " + rank) if tier not in configs.APEX_TIERS else "") # "Master" instead of "Master I"
-    lp = summoner_rank["leaguePoints"]
+    lp = entry["leaguePoints"]
     if tier.upper() == "UNRANKED":
-        rank = "Unranked"
+        progress = entry["placements"]["progress"]
+        formatted_progress = format_progress(progress)
+        res = f"Unranked ({formatted_progress})"
     else:
-        rank = f"{tier_division} {lp} LP"      
-    return rank
+        res = f"{tier_division} {lp} LP"
+    return res
                 
 
-def stack_images(first_image, second_image, how):
-    """Returns an PIL.Image that is the horizontal (left-right) or vertical concatenation (top-bot) of given same-width and same-height images."""
-
-    img1 = first_image if type(first_image) == Image.Image else Image.open(BytesIO(first_image))
-    img2 = second_image if type(second_image) == Image.Image else Image.open(BytesIO(second_image))
-
-    if how == "horizontally":
-        res = Image.new("RGB", (img1.width + img2.width, img2.height))
-        res.paste(img1, (0, 0)) # Pastes img1 at the bottom left
-        res.paste(img2, (img1.width, 0)) # Pastes img2 at the bottom right
-
-    elif how == "vertically":
-        res = Image.new("RGB", (img2.width, img2.height + img1.height))
-        res.paste(img2, (0, img1.height)) # Pastes img1 at the top left
-        res.paste(img1, (0, 0)) # Pastes img2 at bottom top left
-        
+def format_progress(progress):
+    """Formats the progress string (eg "WLN") into Discord emojis."""
+    res = ""
+    for c in progress:
+        if c == "W":
+            res += configs.GREEN_CHECKMARK
+        elif c == "L":
+            res += configs.RED_CROSS
+        elif c == "N":
+            res += configs.WHITE_SQUARE
+        elif c == "D":
+            res += configs.BLACK_CIRCLE # Dodges
+        else:
+            res += c
     return res
+
+
+def update_progress(progress, win = True):
+    """Updates the progress string (eg adding a win to WNN yields WWN)."""
+    res = ""
+    for i in range(0, len(progress)):
+        if progress[i] == "N":
+            break
+    return progress[:i] + ("W" if win else "L") + progress[i + 1:] # i + 1 to discard one "N" that's been repalce by "W" or "L"
+
+
+def get_adjacent_entry(entry, get_next = True):
+    """Gets the next/previous possible rating (ie Gold III _ LP -> Gold II 1 LP)."""
+    tier = entry["tier"] # eg: Gold
+    rank = entry["rank"] # eg: II
+    # Tier promotion
+    if (rank == "I" and get_next):
+        next_tier = configs.TIERS[find_index(tier, configs.TIERS) + 1]
+        next_rank = "IV" if next_tier not in configs.APEX_TIERS else "I"
+        next_lp = 1
+    # Tier demotion
+    elif ((rank == "IV" or tier.upper() == "MASTER") and not get_next):
+        next_tier = configs.TIERS[find_index(tier, configs.TIERS) - 1]
+        next_rank = "I"
+        next_lp = 75
+    # Rank promotion/demotion
+    else:
+        next_tier = tier
+        next_rank = configs.RANKS[find_index(rank, configs.RANKS) + (1 if get_next else -1)]
+        next_lp = 1 if get_next else 75
+            
+    return {"tier": next_tier, "rank": next_rank, "leaguePoints": next_lp}
+
+
+####################
+# GAME METRICS
+####################
+
+
+def get_role_played(participants):
+    """Gives the role played by each participant (the order of reliability seems to be teamPosition > individualPosition > lane)."""
+    res = {}
+    for participant in participants:
+        position = participant["teamPosition"] 
+        position = position if position != "" else participant["individualPosition"]
+        position = position if position.upper() != "INVALID" else participant["lane"]
+        position = position if position.upper() != "NONE" else "UNKNOWN"
+        role = configs.POSITION_TO_ROLE[position] # The order of reliability seems to be teamPosition > individualPosition > lane
+        res[participant["puuid"]] = role
+    return res
+
+
+def get_metrics(participant):
+    """Extracts metrics from the given dictionary."""
+    res = {}
+    res["win"] = participant["win"]
+    res["kills"] = participant["kills"]
+    res["deaths"] = participant["deaths"]
+    res["assists"] = participant["assists"]
+    res["kda"] = (res["kills"] + res["assists"])/res["deaths"] if res["deaths"] != 0 else 0    
+    res["kill_participation"] = participant["challenges"].get("killParticipation", 1) # killParticipation won't be present if the team scored 0 kills
+    res["cs"] = participant["totalMinionsKilled"] + participant["neutralMinionsKilled"]
+    res["vision_score"] = participant["visionScore"]
+    res["gold_earned"] = participant["goldEarned"]
+    res["damage_buildings"] = participant["damageDealtToBuildings"]
+    res["damage_objectives"] = participant["damageDealtToObjectives"] - participant["damageDealtToBuildings"] # We want damage_objectives to be drake/herald/nashor
+    res["level"] = participant["champLevel"]
+    res["number_of_pings"] = participant["basicPings"]
+    res["pentakills"] = participant["pentaKills"]
+    res["team_id"] = participant["teamId"]            
+    res["phsyical_damage_to_champions"] = participant["physicalDamageDealtToChampions"]            
+    res["magic_damage_to_champions"] = participant["magicDamageDealtToChampions"]    
+    res["true_damage_to_champions"] = participant["trueDamageDealtToChampions"]    
+    res["damage_to_champions"] = participant["physicalDamageDealtToChampions"] + participant["magicDamageDealtToChampions"] + participant["trueDamageDealtToChampions"]
+    return res
+
+
+def compute_score(game_info, explained = False):
+    """Gives a rating 0-10 to each player of the ended game."""
+
+    # Get each summoner's metrics
+    participants = game_info["participants"]
+    puuids = set([participant["puuid"] for participant in participants])
+    winners = [participant["puuid"] for participant in participants if participant["win"]]
+    losers = [participant["puuid"] for participant in participants if not participant["win"]]
+    puuid_to_role = get_role_played(participants)    
+    puuid_to_champ_name = {puuid: [cdragon.CHAMPION_ID_TO_PATH_AND_NAME[participant["championId"]]["name"] for participant in participants if participant["puuid"] == puuid][0] for puuid in puuids}
+    metrics_to_puuid = {metric: {participant["puuid"]: get_metrics(participant)[metric] for participant in participants} for metric in configs.METRICS}
+
+    # Get each player's absolute score per metric: for a given metric, the scores are linearly distributed among [0, 10]
+    absolute_scores_per_metric = {}
+    for metric in metrics_to_puuid:
+        performances = metrics_to_puuid[metric]
+        max_perf = max(performances.values())
+        min_perf = min(performances.values())
+        slope = 10/(max_perf - min_perf) if max_perf != min_perf else 0 # The slope in f(perf) = slope*perf + intercept with f(max_perf) = 10 and f(min_perf) = 0
+        intercept = 10 - slope*max_perf # The intercept in f(perf) = slope*perf + intercept with f(max_perf) = 10 and f(min_perf) = 0
+        absolute_scores_per_metric[metric] = {puuid: slope*performances[puuid] + intercept for puuid in performances}
+
+    # Get each player's relative rank score per metric: for a given metric, the differences winning - losing are linearly distributed among [0, 10]
+    relative_scores_per_metric = {}
+    for metric in metrics_to_puuid:
+        performances = metrics_to_puuid[metric]
+        differences = {}
+        for role in puuid_to_role.values():
+            winner = [winner for winner in winners if puuid_to_role[winner] == role][0]
+            loser = [loser for loser in losers if puuid_to_role[loser] == role][0]
+            differences[role] = performances[winner] - performances[loser]
+        max_diff = max(differences.values())
+        min_diff = min(differences.values())     
+        slope = 10/(max_diff - min_diff) if max_diff != min_diff else 0 # The slope in f(diff) = slope*diff + intercept with f(max_diff) = 10 and f(min_diff) = 0
+        intercept = 10 - slope*max_diff # The intercept in f(diff) = slope*diff + intercept with f(max_diff) = 10 and f(min_diff) = 0
+        relative_scores_per_metric[metric] = {puuid: slope*differences[puuid_to_role[puuid]] + intercept for puuid in winners}
+        relative_scores_per_metric[metric].update({puuid: 10 - (slope*differences[puuid_to_role[puuid]] + intercept) for puuid in losers})
+
+    # Compute each player's score (defined as sum(metric_weight*metric_absolute_score for all metrics))
+    absolute_scores = {puuid: sum({metric: configs.WEIGHTS[metric]*absolute_scores_per_metric[metric][puuid] for metric in metrics_to_puuid}.values()) for puuid in puuids} 
+    relative_scores = {puuid: sum({metric: configs.WEIGHTS[metric]*relative_scores_per_metric[metric][puuid] for metric in metrics_to_puuid}.values()) for puuid in puuids} 
+    scores = {puuid: configs.ABSOLUTE_WEIGHT*absolute_scores[puuid] + configs.RELATIVE_WEIGHT*relative_scores[puuid] for puuid in puuids}
+
+    # Sort then round
+    scores = {k: v for k, v in sorted(scores.items(), key = lambda item: item[1], reverse = True)} # Sort them by descending value
+    scores = {key: round(value, 2) for (key, value) in scores.items()}    
+
+    # This is a detailled summary
+    if explained:
+        scores_per_metrics = {metric: {puuid_to_champ_name[puuid]: {"value": metrics_to_puuid[metric][puuid], 
+                                                                    "absolute score": absolute_scores_per_metric[metric][puuid],
+                                                                    "relative score": relative_scores_per_metric[metric][puuid]
+                                                                    } for puuid in puuids} for metric in configs.METRICS}
+
+
+
+    return scores if not explained else scores_per_metrics
